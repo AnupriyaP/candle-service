@@ -245,6 +245,15 @@ Response:
 GET http://localhost:8080/actuator/prometheus
 ```
 
+### Kafka UI
+
+Visual interface to inspect Kafka messages and consumer lag:
+http://localhost:8090
+
+Shows:
+- Live BidAskEvents flowing through `market.bidask` topic
+- All 6 partitions and message counts
+- Consumer group `candle-aggregator` and lag per partition
 ---
 
 ## Running Tests
