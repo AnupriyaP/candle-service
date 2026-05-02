@@ -53,6 +53,8 @@ GET /history REST API
 - Swappable storage — in-memory (default) or TimescaleDB
 - Prometheus metrics at /actuator/prometheus
 - Swagger UI at /swagger-ui.html
+- File logging with rolling policy (7 days history)
+- Health check endpoint at /actuator/health
 
 ---
 
@@ -90,6 +92,19 @@ In-memory store is the default profile — no external dependencies
 for development and testing. TimescaleDB is activated via the
 timescale Spring profile for production use.
 
+### Raw Event Storage
+Raw bid/ask events are not persisted to the database. Kafka serves
+as the event store with 24-hour retention configured on the
+`market.bidask` topic. Events replay automatically on restart via
+`auto-offset-reset: earliest` and manual offset commit — making
+a separate database event table redundant.
+
+### Candle Calculation Decoupling
+The `CandleBuilder` has zero knowledge of the data source. It only
+receives a `BidAskEvent` and produces a `Candle`. The ingestion layer
+(Kafka, simulator, or WebSocket) is completely interchangeable without
+touching the aggregation logic.
+
 ---
 
 ## Quick Start
@@ -117,6 +132,29 @@ docker compose ps
 
 All containers should show as running.
 kafka-init will show exited 0 — this is correct.
+
+### Check logs
+
+```bash
+docker compose logs app --follow
+```
+
+---
+
+### Running Locally (without Docker)
+
+Start only infrastructure:
+```bash
+docker compose up kafka timescaledb -d
+```
+
+Then run from IntelliJ:
+```
+Right click CandleServiceApplication.java
+  → Run 'CandleServiceApplication'
+```
+
+Logs will be written to `logs/candle-service.log`
 
 ---
 
@@ -166,6 +204,13 @@ No data response:
 }
 ```
 
+Error response:
+```json
+{
+  "s": "error: Unknown interval: 99x"
+}
+```
+
 ### Supported Symbols
 ```
 BTC-USD
@@ -182,6 +227,17 @@ BNB-USD
 ### Health Check
 ```
 GET http://localhost:8080/actuator/health
+```
+
+Response:
+```json
+{
+  "status": "UP",
+  "components": {
+    "db": { "status": "UP" },
+    "ping": { "status": "UP" }
+  }
+}
 ```
 
 ### Prometheus Metrics
@@ -211,6 +267,27 @@ Right click src/test/java
 | HistoryControllerTest        | 6     | REST API and security      |
 | CandleServiceIntegrationTest | 5     | Full pipeline end to end   |
 | Total                        | 26    |                            |
+
+### What the tests verify
+
+**CandleBuilderTest** covers:
+- First event opens candle without closing it
+- Events in same bucket update OHLC correctly
+- New bucket event closes current candle
+- Candle time is bucket start in UNIX seconds
+- Late events are ignored
+- Single event candle has equal OHLC values
+- Volume counts all ticks in bucket
+- Force flush returns candle when bucket expired
+- High is always the maximum mid price
+- Low is always the minimum mid price
+
+**CandleServiceIntegrationTest** covers:
+- Full pipeline: publish to Kafka → aggregate → store → query
+- REST API returns correct candle data
+- Multiple symbols aggregated independently
+- 401 returned when API key missing
+- no_data returned for symbol with no events
 
 ---
 
@@ -242,17 +319,98 @@ Exceeding limit returns HTTP 429.
 
 ---
 
+## Observability
+
+### Logging
+- Console logging — always active, visible via `docker compose logs app`
+- File logging — written to `logs/candle-service.log`
+- Rolling policy — new file per day, 7 days history retained
+- Log levels — DEBUG for `com.candleservice`, WARN for Kafka internals
+
+### What gets logged
+- Every bid/ask event received from Kafka (DEBUG)
+- Every candle closed by CandleBuilder (DEBUG)
+- Every candle saved to store (INFO)
+- Every stale candle flushed (INFO)
+- Every API request received (INFO)
+- Rate limit violations (WARN)
+- Processing failures (ERROR)
+
+### Metrics
+All metrics exposed at `/actuator/prometheus` and compatible with Grafana:
+- JVM memory, GC, threads
+- HTTP request rates and latencies
+- Kafka consumer lag
+- Custom candle creation counters
+
+---
+
+## Extensibility
+
+### Adding a new interval
+One line in `Interval.java` enum:
+
+    H4("4h", 14_400_000L),  // add this
+
+One line in `application.yml`:
+
+    candle:
+      intervals:
+        - 1s
+        - 5s
+        - 1m
+        - 15m
+        - 1h
+        - 4h   # add this
+
+No other changes needed.
+
+### Adding a new symbol
+One line in `application.yml`:
+```yaml
+candle:
+  symbols:
+    - BTC-USD
+    - ETH-USD
+    - SOL-USD
+    - BNB-USD
+    - XRP-USD   # add this
+```
+
+No other changes needed.
+
+### Swapping the data source
+Implement `MarketEventSource` and publish to Kafka:
+```java
+// Example: WebSocket feed replacing simulator
+@Component
+@Profile("live")
+public class BinanceWebSocketSource {
+    // connects to wss://stream.binance.com
+    // calls producer.publish(event) for each tick
+    // CandleBuilder is completely unaffected
+}
+```
+
+---
+
 ## Environment Variables
 
-| Variable                        | Default                                    | Description          |
-|---------------------------------|--------------------------------------------|----------------------|
-| SPRING_KAFKA_BOOTSTRAP_SERVERS  | localhost:9092                             | Kafka broker address |
-| SPRING_DATASOURCE_URL           | jdbc:postgresql://localhost:5432/candledb  | DB URL               |
-| SPRING_DATASOURCE_USERNAME      | candle                                     | DB username          |
-| SPRING_DATASOURCE_PASSWORD      | candle_secret                              | DB password          |
-| SPRING_PROFILES_ACTIVE          | (empty = in-memory)                        | timescale for DB     |
-| API_KEY_1                       | dev-key-abc123                             | Primary API key      |
-| API_KEY_2                       | (empty)                                    | Secondary API key    |
+| Variable                        | Default                                    | Description             |
+|---------------------------------|--------------------------------------------|-------------------------|
+| SPRING_KAFKA_BOOTSTRAP_SERVERS  | localhost:9092                             | Kafka broker address    |
+| SPRING_DATASOURCE_URL           | jdbc:postgresql://localhost:5432/candledb  | DB URL                  |
+| SPRING_DATASOURCE_USERNAME      | candle                                     | DB username             |
+| SPRING_DATASOURCE_PASSWORD      | candle_secret                              | DB password             |
+| SPRING_PROFILES_ACTIVE          | (empty = in-memory)                        | timescale for DB        |
+| API_KEY_1                       | dev-key-abc123                             | Primary API key         |
+| API_KEY_2                       | (empty)                                    | Secondary API key       |
+| LOG_PATH                        | logs                                       | Log file directory      |
+| CANDLE_SYMBOLS                  | BTC-USD,ETH-USD,SOL-USD,BNB-USD           | Symbols to simulate     |
+| CANDLE_INTERVALS                | 1s,5s,1m,15m,1h                           | Intervals to aggregate  |
+| CANDLE_SIMULATOR_ENABLED        | true                                       | Enable simulator        |
+| CANDLE_SIMULATOR_RATE_MS        | 500                                        | Simulator fire rate     |
+| CANDLE_FLUSHER_RATE_MS          | 1000                                       | Stale candle flush rate |
 
 ---
 
@@ -296,6 +454,7 @@ src/main/java/com/candleservice/
 
 src/main/resources/
 ├── application.yml
+├── logback-spring.xml
 └── db/
     └── migration/
         └── V1__init.sql
@@ -323,3 +482,6 @@ src/test/java/com/candleservice/
 - UPSERT on candle save (safe for replays)
 - Manual Kafka offset commit (replay on crash)
 - Partitioned by symbol key (ordering guaranteed per symbol)
+- File logging with rolling policy via logback-spring.xml
+- Structured console logging with thread and level context
+- Extensibility section documenting how to add intervals, symbols and sources
