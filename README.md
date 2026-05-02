@@ -1,0 +1,325 @@
+# Candle Service
+
+A production-grade real-time market data aggregation service that ingests
+bid/ask events via Kafka and aggregates them into OHLC candlestick format
+for multiple symbols and timeframes.
+
+---
+
+## Architecture
+
+```
+BidAskSimulator (@Scheduled)
+        ↓
+BidAskProducer → Kafka (market.bidask, 6 partitions)
+        ↓
+BidAskConsumer (3 consumer threads, manual ack)
+        ↓
+AggregationDispatcher → CandleBuilder per (symbol, interval)
+        ↓
+StaleCandleFlusher (@Scheduled, closes expired buckets)
+        ↓
+CandleStore (InMemory or TimescaleDB)
+        ↓
+GET /history REST API
+```
+
+---
+
+## Tech Stack
+
+| Component       | Technology                         |
+|-----------------|------------------------------------|
+| Framework       | Spring Boot 3.2                    |
+| Language        | Java 21 (virtual threads enabled)  |
+| Message Broker  | Apache Kafka (KRaft, no ZooKeeper) |
+| Database        | TimescaleDB (PostgreSQL hypertable)|
+| Security        | API Key auth + Bucket4j rate limit |
+| API Docs        | SpringDoc OpenAPI / Swagger UI     |
+| Observability   | Micrometer + Prometheus            |
+| Testing         | JUnit 5, Mockito, EmbeddedKafka    |
+
+---
+
+## Features
+
+- Real-time bid/ask ingestion via Kafka
+- OHLC aggregation for 4 symbols x 5 intervals (20 builders)
+- Supported intervals: 1s, 5s, 1m, 15m, 1h
+- Supported symbols: BTC-USD, ETH-USD, SOL-USD, BNB-USD
+- Stale candle flusher — closes open candles on timeout
+- TradingView Lightweight Charts compatible API response
+- API key authentication with rate limiting (100 req/sec per key)
+- Swappable storage — in-memory (default) or TimescaleDB
+- Prometheus metrics at /actuator/prometheus
+- Swagger UI at /swagger-ui.html
+
+---
+
+## Assumptions and Trade-offs
+
+### Price Calculation
+Mid-price `(bid + ask) / 2` is used as the OHLC price. In a production
+system you would maintain separate bid and ask candles. This was a
+deliberate simplification noted upfront.
+
+### Volume
+Volume is synthetic — it counts the number of ticks per candle rather
+than actual traded volume. Real volume would require trade data not
+just quotes.
+
+### API Key Auth vs JWT
+API key authentication was chosen over JWT/OAuth2 because this is a
+machine-to-machine data API, not a user-facing auth flow. Keys are
+loaded from environment variables and never committed to source control.
+JWT would be appropriate if user-level delegated access were required.
+
+### Kafka vs In-Process Queue
+Kafka is used even with a simulated source to demonstrate the full
+production pipeline. The ingestion layer is abstracted behind the
+producer/consumer pattern so swapping to a WebSocket feed requires
+only a new producer implementation with no downstream changes.
+
+### Single Broker
+Kafka runs as a single broker (replication-factor=1) for local
+development. In production you would run 3+ brokers with
+replication-factor=3 and min.insync.replicas=2.
+
+### In-Memory vs TimescaleDB
+In-memory store is the default profile — no external dependencies
+for development and testing. TimescaleDB is activated via the
+timescale Spring profile for production use.
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Docker Desktop
+
+### Start full stack
+
+```bash
+docker compose up -d
+```
+
+This starts:
+- Kafka (KRaft mode, port 9092)
+- kafka-init (creates topic, exits after)
+- TimescaleDB (port 5432)
+- candle-service (port 8080, timescale profile active)
+
+### Wait 30 seconds then verify
+
+```bash
+docker compose ps
+```
+
+All containers should show as running.
+kafka-init will show exited 0 — this is correct.
+
+---
+
+## API Usage
+
+### Swagger UI
+
+Open in browser:
+```
+http://localhost:8080/swagger-ui.html
+```
+
+Click Authorize and enter API key:
+```
+dev-key-abc123
+```
+
+### History Endpoint
+
+```
+GET /history?symbol=BTC-USD&interval=1m&from=1620000000&to=1620003600
+```
+
+Required header:
+```
+X-API-Key: dev-key-abc123
+```
+
+Example response:
+```json
+{
+  "s": "ok",
+  "t": [1620000000, 1620000060],
+  "o": [29500.5, 29501.0],
+  "h": [29510.0, 29505.0],
+  "l": [29490.0, 29500.0],
+  "c": [29505.0, 29502.0],
+  "v": [10, 8]
+}
+```
+
+No data response:
+```json
+{
+  "s": "no_data",
+  "t": [], "o": [], "h": [], "l": [], "c": [], "v": []
+}
+```
+
+### Supported Symbols
+```
+BTC-USD
+ETH-USD
+SOL-USD
+BNB-USD
+```
+
+### Supported Intervals
+```
+1s   5s   1m   15m   1h
+```
+
+### Health Check
+```
+GET http://localhost:8080/actuator/health
+```
+
+### Prometheus Metrics
+```
+GET http://localhost:8080/actuator/prometheus
+```
+
+---
+
+## Running Tests
+
+Tests use EmbeddedKafka and H2 in-memory database.
+No Docker required.
+
+### Run all tests in IntelliJ
+```
+Right click src/test/java
+  → Run All Tests
+```
+
+### Test coverage
+
+| Test Class                   | Tests | What it covers             |
+|------------------------------|-------|----------------------------|
+| CandleBuilderTest            | 10    | OHLC aggregation logic     |
+| InMemoryCandleStoreTest      | 5     | Storage and range queries  |
+| HistoryControllerTest        | 6     | REST API and security      |
+| CandleServiceIntegrationTest | 5     | Full pipeline end to end   |
+| Total                        | 26    |                            |
+
+---
+
+## Storage Profiles
+
+### Default — In-Memory (no DB needed)
+```bash
+java -jar candle-service.jar
+```
+
+### TimescaleDB
+```bash
+java -jar candle-service.jar --spring.profiles.active=timescale
+```
+
+---
+
+## Security
+
+| Route                | Auth Required |
+|----------------------|---------------|
+| GET /history         | Yes           |
+| GET /actuator/health | No            |
+| GET /swagger-ui/**   | No            |
+| GET /v3/api-docs/**  | No            |
+
+Rate limit: 100 requests per second per API key.
+Exceeding limit returns HTTP 429.
+
+---
+
+## Environment Variables
+
+| Variable                        | Default                                    | Description          |
+|---------------------------------|--------------------------------------------|----------------------|
+| SPRING_KAFKA_BOOTSTRAP_SERVERS  | localhost:9092                             | Kafka broker address |
+| SPRING_DATASOURCE_URL           | jdbc:postgresql://localhost:5432/candledb  | DB URL               |
+| SPRING_DATASOURCE_USERNAME      | candle                                     | DB username          |
+| SPRING_DATASOURCE_PASSWORD      | candle_secret                              | DB password          |
+| SPRING_PROFILES_ACTIVE          | (empty = in-memory)                        | timescale for DB     |
+| API_KEY_1                       | dev-key-abc123                             | Primary API key      |
+| API_KEY_2                       | (empty)                                    | Secondary API key    |
+
+---
+
+## Project Structure
+
+```
+src/main/java/com/candleservice/
+├── CandleServiceApplication.java
+├── aggregation/
+│   ├── AggregationDispatcher.java
+│   ├── CandleBuilder.java
+│   └── StaleCandleFlusher.java
+├── api/
+│   ├── HistoryController.java
+│   └── dto/
+│       └── HistoryResponse.java
+├── config/
+│   ├── KafkaConsumerConfig.java
+│   ├── KafkaTopicConfig.java
+│   └── OpenApiConfig.java
+├── domain/
+│   ├── BidAskEvent.java
+│   ├── Candle.java
+│   └── Interval.java
+├── ingestion/
+│   ├── kafka/
+│   │   ├── BidAskConsumer.java
+│   │   └── BidAskProducer.java
+│   └── simulator/
+│       └── BidAskSimulator.java
+├── security/
+│   ├── ApiKeyAuthFilter.java
+│   ├── RateLimiterService.java
+│   └── SecurityConfig.java
+└── storage/
+    ├── CandleStore.java
+    ├── inmemory/
+    │   └── InMemoryCandleStore.java
+    └── timescale/
+        └── TimescaleCandleStore.java
+
+src/main/resources/
+├── application.yml
+└── db/
+    └── migration/
+        └── V1__init.sql
+
+src/test/java/com/candleservice/
+├── aggregation/
+│   ├── CandleBuilderTest.java
+│   └── InMemoryCandleStoreTest.java
+├── api/
+│   └── HistoryControllerTest.java
+└── integration/
+    └── CandleServiceIntegrationTest.java
+```
+
+---
+
+## Bonus Features Implemented
+
+- Virtual threads via Spring Boot 3 (`spring.threads.virtual.enabled=true`)
+- KRaft Kafka (no ZooKeeper dependency)
+- TimescaleDB hypertable with compression configured
+- Stale candle flusher handles gaps in event streams
+- Rate limiting per API key via Bucket4j token bucket
+- Multi-stage Docker build (small final image)
+- UPSERT on candle save (safe for replays)
+- Manual Kafka offset commit (replay on crash)
+- Partitioned by symbol key (ordering guaranteed per symbol)

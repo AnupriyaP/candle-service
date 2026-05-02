@@ -1,0 +1,133 @@
+spring:
+  application:
+    name: candle-service
+
+  # ═══════════════════════════════════════
+  # DATABASE
+  # ═══════════════════════════════════════
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/candledb}
+    username: ${SPRING_DATASOURCE_USERNAME:candle}
+    password: ${SPRING_DATASOURCE_PASSWORD:candle_secret}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Connection pool settings
+      minimum-idle: 2
+      maximum-pool-size: 10
+      idle-timeout: 30000
+      connection-timeout: 30000
+      pool-name: CandleHikariPool
+
+  # ═══════════════════════════════════════
+  # FLYWAY — automatic DB migrations
+  # ═══════════════════════════════════════
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ═══════════════════════════════════════
+  # KAFKA
+  # ═══════════════════════════════════════
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+
+    consumer:
+      group-id: candle-aggregator
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        spring.json.trusted.packages: "com.candleservice.domain"
+        session.timeout.ms: 30000
+        heartbeat.interval.ms: 10000
+
+  # ═══════════════════════════════════════
+  # VIRTUAL THREADS
+  # ═══════════════════════════════════════
+  threads:
+    virtual:
+      enabled: true
+
+  # ═══════════════════════════════════════
+  # JACKSON
+  # ═══════════════════════════════════════
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+# ═══════════════════════════════════════
+# SERVER
+# ═══════════════════════════════════════
+server:
+  port: 8080
+  error:
+    include-message: always
+    include-binding-errors: always
+
+# ═══════════════════════════════════════
+# ACTUATOR
+# ═══════════════════════════════════════
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: candle-service
+
+# ═══════════════════════════════════════
+# SWAGGER / OPENAPI
+# ═══════════════════════════════════════
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    try-it-out-enabled: true
+    operations-sorter: alpha
+    tags-sorter: alpha
+    display-request-duration: true
+
+
+# ═══════════════════════════════════════
+# CANDLE SERVICE CONFIG
+# ═══════════════════════════════════════
+candle:
+  symbols: ${CANDLE_SYMBOLS:BTC-USD,ETH-USD,SOL-USD,BNB-USD}
+  intervals: ${CANDLE_INTERVALS:1s,5s,1m,15m,1h}
+  simulator:
+    enabled: ${CANDLE_SIMULATOR_ENABLED:true}
+    rate-ms: ${CANDLE_SIMULATOR_RATE_MS:500}
+  flusher:
+    rate-ms: ${CANDLE_FLUSHER_RATE_MS:1000}
+# ═══════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════
+logging:
+  level:
+    root: INFO
+    com.candleservice: DEBUG
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

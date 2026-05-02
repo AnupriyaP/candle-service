@@ -1,0 +1,121 @@
+
+services:
+
+  # ═══════════════════════════════════════
+  # KAFKA — KRaft mode (no ZooKeeper)
+  # ═══════════════════════════════════════
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: false
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 24
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks:
+      - candle-network
+
+  # ═══════════════════════════════════════
+  # KAFKA INIT — creates topics on startup
+  # ═══════════════════════════════════════
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo 'Creating Kafka topics...'
+
+      kafka-topics --bootstrap-server kafka:29092 \
+        --create --if-not-exists \
+        --topic market.bidask \
+        --partitions 6 \
+        --replication-factor 1 \
+        --config retention.ms=86400000
+
+      echo 'Topics created successfully.'
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    networks:
+      - candle-network
+
+  # ═══════════════════════════════════════
+  # TIMESCALEDB
+  # ═══════════════════════════════════════
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: candledb
+      POSTGRES_USER: candle
+      POSTGRES_PASSWORD: candle_secret
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candle -d candledb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - candle-network
+
+  # ═══════════════════════════════════════
+  # CANDLE SERVICE APP
+  # ═══════════════════════════════════════
+  app:
+    build: .
+    container_name: candle-service
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATASOURCE_URL: jdbc:postgresql://timescaledb:5432/candledb
+      SPRING_DATASOURCE_USERNAME: candle
+      SPRING_DATASOURCE_PASSWORD: candle_secret
+      SPRING_PROFILES_ACTIVE: timescale
+      API_KEY_1: dev-key-abc123
+      API_KEY_2: prod-key-xyz789
+      CANDLE_SYMBOLS: BTC-USD,ETH-USD,SOL-USD,BNB-USD
+      CANDLE_INTERVALS: 1s,5s,1m,15m,1h
+      CANDLE_SIMULATOR_ENABLED: true
+      CANDLE_SIMULATOR_RATE_MS: 500
+      CANDLE_FLUSHER_RATE_MS: 1000
+    networks:
+      - candle-network
+
+volumes:
+  kafka-data:
+  timescale-data:
+
+networks:
+  candle-network:
+    driver: bridge

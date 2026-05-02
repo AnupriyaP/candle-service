@@ -1,0 +1,31 @@
+# Test profile — overrides main config for tests
+spring:
+  kafka:
+    consumer:
+      auto-offset-reset: earliest
+      group-id: candle-aggregator-test
+
+candle:
+  simulator:
+    enabled: false
+  symbols:
+    - BTC-USD
+    - ETH-USD
+    - SOL-USD
+    - BNB-USD
+  intervals:
+    - 1s
+    - 5s
+    - 1m
+    - 15m
+    - 1h
+
+security:
+  api-keys:
+    - dev-key-abc123
+
+logging:
+  level:
+    com.candleservice: DEBUG
+
+
