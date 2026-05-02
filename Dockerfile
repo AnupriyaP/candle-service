@@ -6,6 +6,8 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 
 WORKDIR /app
 
+
+
 # Copy pom.xml first — dependencies cached as separate layer
 # This means if only source code changes, Maven doesn't
 # re-download all dependencies — much faster rebuilds
@@ -25,21 +27,20 @@ FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
 
-# Non-root user for security
 RUN addgroup -S appgroup && \
     adduser -S appuser -G appgroup
 
-# Copy only the jar from build stage
-COPY --from=build /app/target/*.jar app.jar
+RUN mkdir -p /app/logs && \
+    chown -R appuser:appgroup /app/logs
 
-# Own the jar
+COPY target/*.jar app.jar
+
 RUN chown appuser:appgroup app.jar
 
 USER appuser
 
 EXPOSE 8080
 
-# Virtual threads + container aware JVM flags
 ENTRYPOINT ["java", \
   "-XX:+UseContainerSupport", \
   "-XX:MaxRAMPercentage=75.0", \

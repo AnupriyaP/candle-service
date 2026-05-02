@@ -133,6 +133,9 @@ logging:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
   file:
-    name: logs/candle-service.log
-    max-size: 10MB
-    max-history: 7
+    name: /app/logs/candle-service.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 7
+      file-name-pattern: /app/logs/candle-service-%d{yyyy-MM-dd}.%i.log

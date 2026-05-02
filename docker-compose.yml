@@ -109,6 +109,7 @@ services:
       CANDLE_SIMULATOR_ENABLED: true
       CANDLE_SIMULATOR_RATE_MS: 500
       CANDLE_FLUSHER_RATE_MS: 1000
+      LOG_PATH: /app/logs
     networks:
       - candle-network
 
